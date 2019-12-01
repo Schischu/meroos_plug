@@ -129,10 +129,14 @@ def main(argv):
   influxDbClient.create_retention_policy(configuration["influxdb-policy"], 'INF', 3, default=True)
 
   for p in plugs:
+
+    if not p.online:
+      continue
     #print(p)
     sensorId = p.uuid.lower()
 
     power = p.get_electricity()
+
     #power_consumption = p.get_power_consumption()
 
     #print("power", power)
@@ -144,6 +148,8 @@ def main(argv):
 
     tag = {}
     sensorId = str(sensorId.replace(":", "")[-4:])
+
+    tag["room"] = ("Room", str(p.name))
     tag["switch"] = ("Switch", switch)
     tag["power"] = ("Power", power["power"])
 
@@ -155,6 +161,7 @@ def main(argv):
       "measurement": configuration["influxdb-prefix"],
       "tags": {
           "sensor": sensorId,
+          "name": str(p.name),
       },
       "time": lastUtc[1],
       "fields": {
