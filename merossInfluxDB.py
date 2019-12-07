@@ -75,8 +75,10 @@ def main(argv):
   merossUsername = ""
   merossPassword = ""
 
-  if "meross" in configuration:
-    meross = configuration["meross"]
+  credentials = json.load(open('credentials.json'))
+
+  if "meross" in credentials:
+    meross = credentials["meross"]
 
     if "username" in meross:
       merossUsername = meross["username"]
