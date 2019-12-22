@@ -178,7 +178,7 @@ def main(argv):
     try:
       influxDbClient.write_points(influxDbJson, retention_policy=configuration["influxdb-policy"])
     except:
-      print "Influxdb not available"
+      print("Influxdb not available")
 
   manager.stop()
 
