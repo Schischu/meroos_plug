@@ -134,7 +134,9 @@ def main(argv):
 
     if not p.online:
       continue
-    #print(p)
+    print("-"*80)
+    print(p)
+    print("-"*80)
     sensorId = p.uuid.lower()
 
     power = p.get_electricity()
@@ -173,7 +175,10 @@ def main(argv):
       influxDbJson[0]["fields"][key] = tag[key][1]
 
     print("Pushing", influxDbJson)
-    influxDbClient.write_points(influxDbJson, retention_policy=configuration["influxdb-policy"])
+    try:
+      influxDbClient.write_points(influxDbJson, retention_policy=configuration["influxdb-policy"])
+    except:
+      print "Influxdb not available"
 
   manager.stop()
 
