@@ -3,6 +3,7 @@
 import sys
 import json
 import time
+import socket
 from datetime import datetime
 
 from meross_iot.manager import MerossManager
@@ -21,9 +22,43 @@ def broadcastMqtt(client, server, port, prefix, postfix, data):
   topic = prefix + "/" + postfix
 
   #print "MQTT Publish", topic, data
-  mqttc.publish(topic, data)
+  mqttc.publish(topic, data, qos=1, retain=True)
 
   mqttc.loop(2)
+
+def broadcastHomie(configuration, topic, value):
+  broadcastMqtt(
+    configuration["mqtt"]["client"], 
+    configuration["mqtt"]["server"], 
+    configuration["mqtt"]["port"], 
+    "homie", 
+    topic,
+    value)
+
+def broadcastHomieDevice(configuration, deviceId, friendlyName, state, nodes, extensions, implementation=None):
+  broadcastHomie(configuration, deviceId + "/$homie", "3.0") #required
+  broadcastHomie(configuration, deviceId + "/$name", friendlyName) #required
+  broadcastHomie(configuration, deviceId + "/$state", state) #required
+  broadcastHomie(configuration, deviceId + "/$nodes", nodes) #required
+  broadcastHomie(configuration, deviceId + "/$extensions", extensions) #required
+
+  if implementation is not None:
+    broadcastHomie(configuration, deviceId + "/$implementation", implementation) #optional
+
+def broadcastHomieNode(configuration, deviceId, nodeId, friendlyName, nodeType, properties):
+  broadcastHomie(configuration, deviceId + "/" + nodeId + "/$name", friendlyName) #required
+  broadcastHomie(configuration, deviceId + "/" + nodeId + "/$type", nodeType) #required
+  broadcastHomie(configuration, deviceId + "/" + nodeId + "/$properties", properties) #required
+
+def broadcastHomieProperty(configuration, deviceId, nodeId, propertyId, friendlyName, dataType, unit):
+  broadcastHomie(configuration, deviceId + "/" + nodeId +  "/" + propertyId + "/$name", friendlyName) #required
+  broadcastHomie(configuration, deviceId + "/" + nodeId +  "/" + propertyId + "/$datatype", dataType) #required
+
+  if unit is not None:
+    broadcastHomie(configuration, deviceId + "/" + nodeId +  "/" + propertyId + "/$unit", unit)
+
+def broadcastHomiePropertyValue(configuration, deviceId, nodeId, propertyId, value):
+  broadcastHomie(configuration, deviceId + "/" + nodeId +  "/" + propertyId, value)
 
 def event_handler(eventobj):
   if eventobj.event_type == MerossEventType.DEVICE_ONLINE_STATUS:
@@ -35,8 +70,6 @@ def event_handler(eventobj):
                                                                       eventobj.switch_state))
   elif eventobj.event_type == MerossEventType.CLIENT_CONNECTION:
     print("MQTT connection state changed: client went %s" % eventobj.status)
-
-    # TODO: Give example of reconnection?
 
   elif eventobj.event_type == MerossEventType.GARAGE_DOOR_STATUS:
     print("Garage door is now %s" % eventobj.door_state)
@@ -67,12 +100,20 @@ def main(argv):
       if "enabled" not in configuration["mqtt"]:
         configuration["mqtt"]["enabled"] = True
 
+      if "classic" not in configuration["mqtt"]:
+        configuration["mqtt"]["classic"] = True
+
+      if "homie" not in configuration["mqtt"]:
+        configuration["mqtt"]["homie"] = False
+
       print ("MQTT Configuration:")
-      print ("MQTT Client:   ", configuration["mqtt"]["client"])
-      print ("MQTT Server:   ", configuration["mqtt"]["server"])
-      print ("MQTT Port:     ", configuration["mqtt"]["port"])
-      print ("MQTT Prefix:   ", configuration["mqtt"]["prefix"])
-      print ("MQTT Enabled:  ", configuration["mqtt"]["enabled"])
+      print ("MQTT Client:    ", configuration["mqtt"]["client"])
+      print ("MQTT Server:    ", configuration["mqtt"]["server"])
+      print ("MQTT Port:      ", configuration["mqtt"]["port"])
+      print ("MQTT Prefix:    ", configuration["mqtt"]["prefix"])
+      print ("MQTT Enabled:   ", configuration["mqtt"]["enabled"])
+      print ("MQTT Classic:   ", configuration["mqtt"]["classic"])
+      print ("MQTT Homie 3.0: ", configuration["mqtt"]["homie"])
 
     except Exception as ex:
       print ("Error parsing mqtt configuration", ex)
@@ -192,25 +233,64 @@ def main(argv):
     tag = {}
     sensorId = str(sensorId.replace(":", "")[-4:])
 
-    tag["room"] = ("Room", str(p.name))
-    tag["switch"] = ("Switch", switch)
-    tag["power"] = ("Power", power["power"])
+    tag["room"] = ("Room", str(p.name), None)
+    tag["switch"] = ("Switch", bool(switch), None)
+    tag["power"] = ("Power", power["power"], "W")
 
     now = datetime.utcnow()
     lastUtc = ("Updated", now.strftime("%Y-%m-%dT%H:%M:%SZ")) #2017-11-13T17:44:11Z
 
     if configuration["mqtt"]["enabled"]:
-      print ("Pushing Mqtt", sensorId, ":", configuration["mqtt"]["prefix"], tag)
-      try:
-        broadcastMqtt(
-          configuration["mqtt"]["client"], 
-          configuration["mqtt"]["server"], 
-          configuration["mqtt"]["port"], 
-          configuration["mqtt"]["prefix"], 
-          sensorId + "/update",
-          json.dumps(tag))
-      except Exception as ex:
-        print ("Error on mqtt broadcast", ex)
+      if configuration["mqtt"]["classic"]:
+        print ("Pushing Mqtt", sensorId, ":", configuration["mqtt"]["prefix"], tag)
+        try:
+          broadcastMqtt(
+            configuration["mqtt"]["client"], 
+            configuration["mqtt"]["server"], 
+            configuration["mqtt"]["port"], 
+            configuration["mqtt"]["prefix"], 
+            sensorId + "/update",
+            json.dumps(tag))
+        except Exception as ex:
+          print ("Error on mqtt broadcast", ex)
+
+      if configuration["mqtt"]["homie"]:
+        deviceId = configuration["mqtt"]["prefix"] + "-" + sensorId
+
+        broadcastHomieDevice(configuration, deviceId, tag["room"][1], "init", "0", "")
+
+        properties = ""
+        for key in tag.keys():
+            properties = properties + key + ","
+
+        # cut last ,
+        if len(properties) > 0:
+          properties = properties[:-1]
+
+        print ("Pushing Mqtt Homie", sensorId, ":", configuration["mqtt"]["prefix"], tag)
+        try:
+          # deviceId, nodeId, friendlyName, nodeType, properties
+          broadcastHomieNode(configuration, deviceId, "0", "0", configuration["mqtt"]["prefix"], properties)
+        except Exception as ex:
+          print ("Error on homie broadcast", ex)
+
+        try:
+          for key in tag.keys():
+            dataType = "string"
+            if type(tag[key][1]) is int:
+              dataType = "integer"
+            elif type(tag[key][1]) is float:
+              dataType = "float"
+            elif type(tag[key][1]) is bool:
+              dataType = "boolean"
+
+            # deviceId, nodeId, propertyId, friendlyName, dataType, unit
+            broadcastHomieProperty(configuration, deviceId, "0", key, tag[key][0], dataType, tag[key][2])
+
+            # deviceId, nodeId, propertyId, value
+            broadcastHomiePropertyValue(configuration, deviceId, "0", key, tag[key][1])
+        except Exception as ex:
+          print ("Error on homie broadcast", ex)
 
     if configuration["influxdb"]["enabled"]:
       influxDbJson = [
@@ -226,7 +306,10 @@ def main(argv):
         }
       }]
       for key in tag.keys():
-        influxDbJson[0]["fields"][key] = tag[key][1]
+        if key == "switch":
+          influxDbJson[0]["fields"][key] = int(tag[key][1]) # its already an int in database :-(
+        else:
+          influxDbJson[0]["fields"][key] = tag[key][1]
 
       print("Pushing InfluxDb", influxDbJson)
       try:
